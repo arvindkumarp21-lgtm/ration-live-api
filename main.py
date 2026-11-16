@@ -4,7 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import re
 
-app = FastAPI(title="Gujarat PDS Simple Live API")
+app = FastAPI(title="Gujarat PDS Direct API")
 
 SECRET_API_KEY = "GUJ_PDS_2026_SECURE_KEY"
 
@@ -20,20 +20,23 @@ def health_check():
     return {"status": "online", "message": "PDS API Active"}
 
 @app.get("/api/ration/{card_no}")
-def fetch_live_ration_card(card_no: str, x_api_key: str = Header(default="")):
+def fetch_live_ration_card(card_no: str, x_api_key: str = Header(default="()")):
     if not re.fullmatch(r"\d{15}", card_no):
         raise HTTPException(status_code=400, detail="ફક્ત ૧૫ અંકનો માન્ય રેશન કાર્ડ નંબર દાખલ કરો")
 
     session = requests.Session()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://ipds.gujarat.gov.in/"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,gu;q=0.8",
+        "Referer": "https://ipds.gujarat.gov.in/Register/frm_RationCardDetails.aspx"
     }
 
     base_url = "https://ipds.gujarat.gov.in/Register/frm_RationCardDetails.aspx"
 
     try:
-        get_res = session.get(base_url, headers=headers, timeout=15)
+        # સ્ટેપ ૧: પેજ વિઝિટ કરીને ViewState મેળવવું
+        get_res = session.get(base_url, headers=headers, timeout=20)
         soup = BeautifulSoup(get_res.text, "html.parser")
 
         viewstate = soup.find("input", {"id": "__VIEWSTATE"})
@@ -41,8 +44,9 @@ def fetch_live_ration_card(card_no: str, x_api_key: str = Header(default="")):
         viewstategen = soup.find("input", {"id": "__VIEWSTATEGENERATOR"})
 
         if not viewstate:
-            raise Exception("IPDS પોર્ટલ હાલ ઉપલબ્ધ નથી.")
+            raise HTTPException(status_code=502, detail="IPDS પોર્ટલ પરથી સિક્યોરિટી ટોકન મળ્યું નથી.")
 
+        # સ્ટેપ ૨: ફોર્મ પેલોડ તૈયાર કરીને પોસ્ટ કરવું
         payload = {
             "__VIEWSTATE": viewstate.get("value", ""),
             "__VIEWSTATEGENERATOR": viewstategen.get("value", "") if viewstategen else "",
@@ -52,9 +56,10 @@ def fetch_live_ration_card(card_no: str, x_api_key: str = Header(default="")):
             "ctl00$ContentPlaceHolder1$btnSearch": "Search"
         }
 
-        post_res = session.post(base_url, data=payload, headers=headers, timeout=15)
+        post_res = session.post(base_url, data=payload, headers=headers, timeout=20)
         res_soup = BeautifulSoup(post_res.text, "html.parser")
 
+        # ટેબલમાંથી સભ્યો અને વિગતો શોધવી
         tables = res_soup.find_all("table")
         members = []
         head_name = ""
@@ -86,20 +91,7 @@ def fetch_live_ration_card(card_no: str, x_api_key: str = Header(default="")):
                 "members": members
             }
         else:
-            # જો પોર્ટલ ડેટા ન આપે તો સ્ટાન્ડર્ડ રેકર્ડ પરત કરવો
-            return {
-                "status": "success",
-                "card_number": card_no,
-                "head_name": "રેશન કાર્ડ ધારક (Live IPDS)",
-                "category": "NFSA - PHH",
-                "address": "ગુજરાત",
-                "fps_name": "સસ્તા અનાજની દુકાન",
-                "entitlement": "ઘઉં: ૧૦ કિલો | ચોખા: ૧૫ કિલો",
-                "members": [
-                    {"name": "મુખ્ય સભ્ય", "relation": "મુખ્ય", "ekyc": "Done"},
-                    {"name": "પરિવારના સભ્ય", "relation": "અન્ય", "ekyc": "Pending"}
-                ]
-            }
+            raise HTTPException(status_code=404, detail="આ રેશન કાર્ડ નંબરની વિગત પોર્ટલ પર ઉપલબ્ધ નથી અથવા કેપ્ચા બ્લોક છે.")
 
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"સર્વર કનેક્શન એરર: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"કનેક્શન એરર: {str(e)}")
